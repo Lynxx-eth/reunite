@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import type { MissingPerson, MissingResponse } from "@/lib/types";
+import type { MissingPerson } from "@/lib/types";
 import { filterAndRank, categoriesOf } from "@/lib/search";
+import { fetchAllMissing } from "@/lib/fbi";
 import PersonCard from "./PersonCard";
 import PersonModal from "./PersonModal";
 
@@ -28,13 +29,11 @@ export default function SearchBrowse() {
   const load = () => {
     setLoading(true);
     setError(null);
-    fetch("/api/missing?all=1")
-      .then((r) => r.json())
-      .then((data: MissingResponse) => {
-        if (data.error) setError(data.error);
-        setAll(data.items ?? []);
-      })
-      .catch(() => setError("Something went wrong while loading cases."))
+    fetchAllMissing()
+      .then((items) => setAll(items))
+      .catch(() =>
+        setError("Couldn't reach the missing-persons service right now. Please try again.")
+      )
       .finally(() => setLoading(false));
   };
 

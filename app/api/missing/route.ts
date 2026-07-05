@@ -86,24 +86,38 @@ export async function GET(req: NextRequest) {
   const title = sp.get("title")?.trim() ?? "";
   const wantAll = sp.get("all") === "1";
 
-  // "all" mode: page through the whole missing-persons set once (cached upstream)
-  // so the client can do fast, accurate, typo-tolerant search locally.
+  // "all" mode: pull the whole missing-persons set once (cached upstream) so the
+  // client can do fast, accurate, typo-tolerant search locally. We fetch page 1 to
+  // learn the total, then fetch the remaining pages IN PARALLEL — this keeps the
+  // request well under serverless function time limits (e.g. Vercel's 10s).
   if (wantAll) {
     try {
-      const all: MissingPerson[] = [];
-      let total = 0;
-      for (let p = 1; p <= 12; p++) {
-        const res = await fetchList(String(p), "");
-        if (!res.ok) break;
-        const data = (await res.json()) as { total?: number; items?: RawItem[] };
-        total = data.total ?? total;
-        const batch = (data.items ?? []).filter((i) => i.uid && i.title).map(normalize);
-        all.push(...batch);
-        if (batch.length === 0 || all.length >= total) break;
+      const PAGE_SIZE = 24;
+      const first = await fetchList("1", "");
+      if (!first.ok) throw new Error(`upstream ${first.status}`);
+      const firstData = (await first.json()) as { total?: number; items?: RawItem[] };
+      const total = firstData.total ?? 0;
+      const collected: RawItem[] = firstData.items ?? [];
+
+      const lastPage = Math.min(Math.ceil(total / PAGE_SIZE) || 1, 12);
+      if (lastPage > 1) {
+        const rest = await Promise.all(
+          Array.from({ length: lastPage - 1 }, (_, i) =>
+            fetchList(String(i + 2), "")
+              .then((r) => (r.ok ? r.json() : { items: [] }))
+              .then((d: { items?: RawItem[] }) => d.items ?? [])
+              .catch(() => [] as RawItem[])
+          )
+        );
+        rest.forEach((batch) => collected.push(...batch));
       }
-      // de-dupe by uid (some cases appear across pages)
+
+      // normalise + de-dupe by uid (some cases appear across pages)
       const seen = new Set<string>();
-      const items = all.filter((i) => (seen.has(i.uid) ? false : (seen.add(i.uid), true)));
+      const items = collected
+        .filter((i) => i.uid && i.title && !seen.has(i.uid) && (seen.add(i.uid), true))
+        .map(normalize);
+
       return NextResponse.json({ total: items.length, page: 1, items });
     } catch {
       return NextResponse.json(
